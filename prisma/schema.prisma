@@ -1,0 +1,73 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Habitacion {
+  id          Int      @id @default(autoincrement())
+  numero      String   @unique // Sigue siendo único, pero se puede cambiar si remodelan
+  tipo        String   
+  precioBase  Float 
+  estado      String   @default("Disponible")
+  reservas    Reserva[]
+}
+
+model Huesped {
+  id              Int      @id @default(autoincrement()) // ID interno, seguro e inmutable
+  tipoDocumento   String   // Ej: "Cédula", "Pasaporte", "DNI"
+  numeroDocumento String   
+  nombre          String
+  apellido        String
+  email           String   @unique 
+  telefono        String?
+  notas           String?
+  reservas        Reserva[] 
+
+  @@unique([tipoDocumento, numeroDocumento]) // Esto asegura que no haya un pasaporte y una cédula con el mismo número, pero sí dos documentos de distinto tipo con el mismo número
+}
+
+model Reserva {
+  id            Int      @id @default(autoincrement())
+  fechaCheckIn  DateTime
+  fechaCheckOut DateTime
+  estado        String   @default("Pendiente") 
+  precioTotal   Float
+
+  habitacionId  Int
+  huespedId     Int
+  habitacion    Habitacion @relation(fields: [habitacionId], references: [id])
+  huesped       Huesped    @relation(fields: [huespedId], references: [id])
+}
+
+model usuario {
+  id        Int @id @default(autoincrement())
+  nombre    String
+  email     String @unique
+  password  String
+  rol       String @default("Recepcionista")
+}
+
+model Gasto {
+  id          Int @id @default(autoincrement())
+  concepto    String 
+  monto       Float
+  categoria   String
+  estado      String @default("Pagado")
+  fecha       DateTime @default(now())
+}
+
+model Configuracion {
+  id           Int    @id @default(1)
+  horaCheckIn  String @default("13:00")
+  horaCheckOut String @default("12:00")
+}
