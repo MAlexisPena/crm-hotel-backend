@@ -4,69 +4,103 @@ const prisma = new PrismaClient();
 
 async function main() {
 
-  // Encriptar las contraseñas
-  const passGerente = await bcrypt.hash('gerente123', 10);
-  const passRecep = await bcrypt.hash('recep123', 10);
+  // 1. Creamos el Primer Hotel
+    const hotel = await prisma.hotel.upsert({
 
-  // Crear el Gerente
-  await prisma.usuario.upsert({
-
-    where: { email: 'gerente@hotel.com' },
-    update: { password: passGerente },
+    where: { id: 1 },
+    update: {},
     create: {
-
-      nombre: 'Pepito Pérez',
-      email: 'gerente@hotel.com',
-      password: passGerente,
-      rol: 'Gerente'
+      id: 1,
+      nombre: "Hotel Prueba",
+      razonSocial: "Hotel Prueba S.A.S",
+      nit: "900.123.456-7",
+      direccion: "Cra 1 # 2-3",
+      ciudad: "Bogotá D.C.",           
+      departamento: "Bogotá D.C", 
+      pais: "Colombia",           
+      telefono: "5551234",
+      moneda: "COP",
+      horaCheckIn: "13:00",
+      horaCheckOut: "12:00",
+      ivaPorcentaje: 19.0
 
     }
+    
   });
 
-  // Crear el Recepcionista
+  console.log('✅ Hotel creado:', hotel.nombre);
+
+  // 2. Encriptamos las contraseñas
+  const passGerente = await bcrypt.hash('gerente123', 10);
+  const passRecep = await bcrypt.hash('recep123', 10);
+  const passGeHotelDay = await bcrypt.hash('hotelday123', 10);
+
+  // 3. Creamos los Usuarios (Agregando hotelId: 1)
+  await prisma.usuario.upsert({
+
+    where: { email: 'gerente@hotelprueba.com' },
+    update: { password: passGerente, hotelId: 1 },
+    create: { 
+
+      nombre: 'Gerente General',
+      email: 'gerente@hotelprueba.com', 
+      password: passGerente, 
+      rol: 'Gerente', 
+      hotelId: 1 
+
+    }
+
+  });
+
   await prisma.usuario.upsert({
 
     where: { email: 'recepcion@hotel.com' },
-    update: { password: passRecep },
-    create: {
-
-      nombre: 'Ana Pancracia',
-      email: 'recepcion@hotel.com',
-      password: passRecep,
-      rol: 'Recepcionista'
-
+    update: { password: passRecep, hotelId: 1 },
+    create: { 
+      
+      nombre: 'Ana Recepcionista', 
+      email: 'recepcion@hotel.com', 
+      password: passRecep, 
+      rol: 'Recepcionista', 
+      hotelId: 1 
+    
     }
+
   });
 
-  console.log('✅ Usuarios creados/actualizados exitosamente');
+    await prisma.usuario.upsert({
 
-  // Borrar gastos (mientras prueba)
-  await prisma.Gasto.deleteMany({});
+    where: { email: 'gerente@hotelday.com' },
+    update: { password: passGeHotelDay, hotelId: 2 },
+    create: { 
 
-  // Crear gastos del mes actual
-  await prisma.Gasto.createMany({
+      nombre: 'Gerente Hotel Day',
+      email: 'gerente@hotelday.com', 
+      password: passGeHotelDay, 
+      rol: 'Gerente', 
+      hotelId: 2 
+
+    }
+
+  });
+
+  console.log('✅ Usuarios creados');
+
+  // 4. Borramos gastos viejos y creamos nuevos (Agregando hotelId: 1)
+  await prisma.gasto.deleteMany({});
+  await prisma.gasto.createMany({
 
     data: [
 
-      { concepto: 'Nómina Recepción y Limpieza', monto: 250000, categoria: 'Nomina' }
+      { concepto: 'Nómina Recepción', monto: 2500000, categoria: 'Nomina', estado: 'Pagado', hotelId: 1 },
+      { concepto: 'Servicios Públicos', monto: 850000, categoria: 'Servicios', estado: 'Pendiente', hotelId: 1 }
 
     ]
+
   });
 
   console.log('💸 Gastos registrados exitosamente');
 
-    // Configuración inicial del hotel
-  await prisma.configuracion.upsert({
-
-    where: { id: 1 },
-    update: {},
-    create: { horaCheckIn: "13:00", horaCheckOut: "12:00" }
-
-  });
-  
-  console.log('⚙️ Configuración de hotel creada');
-  
 }
-
 
 main().catch(e => console.error(e)).finally(() => prisma.$disconnect());

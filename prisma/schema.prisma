@@ -13,34 +13,77 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Hotel {
+  id            Int      @id @default(autoincrement())
+  nombre        String   // Nombre comercial (Ej: Hotel Sunset)
+  razonSocial   String   // Nombre legal (Ej: Inversiones Sunset S.A.S)
+  nit           String   // Identificador fiscal
+  direccion     String?
+  ciudad        String?
+  departamento  String?
+  pais          String?
+  telefono      String?
+  moneda        String   @default("COP") // Ej: COP, USD, EUR
+  horaCheckIn   String   @default("13:00")
+  horaCheckOut  String   @default("12:00")
+  ivaPorcentaje Float    @default(19.0)  // Porcentaje de impuesto
+  logoUrl       String?  // Para el logo (lo usaremos en el futuro)
+
+  // Relaciones: Un hotel tiene muchos de estos elementos
+  usuarios      Usuario[]
+  habitaciones  Habitacion[]
+  huespedes     Huesped[]
+  reservas      Reserva[]
+  gastos        Gasto[]
+  temporada     Temporada[]
+}
+
+model Usuario {
+  id       Int    @id @default(autoincrement())
+  hotelId  Int    // ADN del hotel
+  hotel    Hotel  @relation(fields: [hotelId], references: [id])
+  nombre   String
+  email    String @unique
+  password String
+  rol      String @default("Recepcionista")
+}
+
 model Habitacion {
   id          Int      @id @default(autoincrement())
-  numero      String   @unique // Sigue siendo único, pero se puede cambiar si remodelan
-  tipo        String   
-  precioBase  Float 
+  hotelId     Int      // ADN del hotel
+  hotel       Hotel    @relation(fields: [hotelId], references: [id])
+  numero      String
+  tipo        String
+  precioBase  Float
   estado      String   @default("Disponible")
   reservas    Reserva[]
+
+  @@unique([hotelId, numero]) // Regla de oro: En un mismo hotel, no pueden haber 2 habitaciones con el mismo número
 }
 
 model Huesped {
-  id              Int      @id @default(autoincrement()) // ID interno, seguro e inmutable
-  tipoDocumento   String   // Ej: "Cédula", "Pasaporte", "DNI"
-  numeroDocumento String   
+  id              Int      @id @default(autoincrement())
+  hotelId         Int      // ADN del hotel
+  hotel           Hotel    @relation(fields: [hotelId], references: [id])
+  tipoDocumento   String
+  numeroDocumento String
   nombre          String
   apellido        String
-  email           String   @unique 
+  email           String
   telefono        String?
   notas           String?
-  reservas        Reserva[] 
+  reservas        Reserva[]
 
-  @@unique([tipoDocumento, numeroDocumento]) // Esto asegura que no haya un pasaporte y una cédula con el mismo número, pero sí dos documentos de distinto tipo con el mismo número
+  @@unique([hotelId, numeroDocumento]) // Regla de oro: En un mismo hotel, no pueden haber 2 huéspedes con la misma cédula
 }
 
 model Reserva {
   id            Int      @id @default(autoincrement())
+  hotelId       Int      // ADN del hotel
+  hotel         Hotel    @relation(fields: [hotelId], references: [id])
   fechaCheckIn  DateTime
   fechaCheckOut DateTime
-  estado        String   @default("Pendiente") 
+  estado        String   @default("Pendiente")
   precioTotal   Float
 
   habitacionId  Int
@@ -49,25 +92,24 @@ model Reserva {
   huesped       Huesped    @relation(fields: [huespedId], references: [id])
 }
 
-model usuario {
-  id        Int @id @default(autoincrement())
-  nombre    String
-  email     String @unique
-  password  String
-  rol       String @default("Recepcionista")
-}
-
 model Gasto {
-  id          Int @id @default(autoincrement())
-  concepto    String 
-  monto       Float
-  categoria   String
-  estado      String @default("Pagado")
-  fecha       DateTime @default(now())
+  id        Int      @id @default(autoincrement())
+  hotelId   Int      // ADN del hotel
+  hotel     Hotel    @relation(fields: [hotelId], references: [id])
+  concepto  String
+  monto     Float
+  categoria String
+  estado    String   @default("Pagado")
+  fecha     DateTime @default(now())
 }
 
-model Configuracion {
-  id           Int    @id @default(1)
-  horaCheckIn  String @default("13:00")
-  horaCheckOut String @default("12:00")
+model Temporada {
+  id            Int      @id @default(autoincrement())
+  hotelId       Int
+  hotel         Hotel    @relation(fields: [hotelId], references: [id])
+  nombre        String   // Ej: "Semana Santa"
+  fechaInicio   DateTime
+  fechaFin      DateTime
+  porcentaje    Float    // Ej: 20 (para +20%), -10 (para -10%)
+  diasAplicables String  @default("0,1,2,3,4,5,6") // 0=Domingo, 6=Sabado
 }
