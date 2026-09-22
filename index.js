@@ -27,7 +27,7 @@ app.use(cors({
     // Blindaje extra: si el visitante llega con barra final, se la quitamos antes de comparar
     const origenLimpio = origin && origin.endsWith('/') ? origin.slice(0, -1) : origin;
 
-    if (!originLimpio || allowedOrigins.indexOf(originLimpio) !== -1) {
+    if (!origenLimpio || allowedOrigins.indexOf(origenLimpio) !== -1) {
 
       callback(null, true);
 
