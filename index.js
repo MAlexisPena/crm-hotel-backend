@@ -16,7 +16,7 @@ const app = express(); // Inicializamos Express
 const allowedOrigins = [
 
   'http://localhost:5173',
-  'https://crm-hotel-frontend.vercel.app/'
+  'https://crm-hotel-frontend.vercel.app'
 
 ];
 
@@ -24,7 +24,10 @@ app.use(cors({
 
   origin: function (origin, callback) {
 
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+    // Blindaje extra: si el visitante llega con barra final, se la quitamos antes de comparar
+    const origenLimpio = origin && origin.endsWith('/') ? origin.slice(0, -1) : origin;
+
+    if (!originLimpio || allowedOrigins.indexOf(originLimpio) !== -1) {
 
       callback(null, true);
 
