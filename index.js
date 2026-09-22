@@ -155,6 +155,7 @@ app.post('/api/auth/login', async (req, res) => {
 
   } catch (error) {
 
+    console.error('❌ Error detallado en login:', error);
     res.status(500).json({ error: 'Error en el login' });
 
   }
