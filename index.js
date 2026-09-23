@@ -221,14 +221,17 @@ app.use(authMiddleware);
 
 // === MOTOR DE PRECIOS DINÁMICOS ===
 // Función matemática pura
-async function calcularPrecioReserva(hotelId, habitacionId, fechaCheckIn, fechaFin, descuento) {
+async function calcularPrecioReserva(hotelId, habitacionId, fechaCheckIn, fechaFin, descuento, db = prisma) {
 
-  const habitacion = await prisma.habitacion.findFirst({ 
+  const habitacion = await db.habitacion.findFirst({ 
+
     where: { id: habitacionId, hotelId: hotelId }
+
   });
+  
   if (!habitacion) throw new Error('Habitación no encontrada');
 
-  const temporadas = await prisma.temporada.findMany({ where: { hotelId } });
+  const temporadas = await db.temporada.findMany({ where: { hotelId } });
 
   // Función para parsear fechas de forma segura
   const parseSafeDate = (dateStr) => {
@@ -505,97 +508,130 @@ app.put('/api/huespedes/:id/notas', async (req, res) => {
 });
 
 // === RESERVAS Y CHECK-IN ===
-// Ruta para HACER CHECK-IN (creando reserva y actualizando estado de habitación)
+// Ruta para HACER CHECK-IN (con transacción anti-overbooking)
 app.post('/api/checkin', async (req, res) => {
 
   try {
 
     const { habitacionId, tipoDocumento, numeroDocumento, nombre, apellido, email, telefono, fechaCheckOut, descuento } = req.body;
 
-    // Anti-overbooking: Verificamos si la habitación ya tiene una reserva futura
-    const conflicto = await prisma.reserva.findFirst({
+    const resultado = await prisma.$transaction(async (tx) => {
 
-      where: {
+      // 1. Anti-overbooking: DENTRO del cuarto cerrado
+      const conflicto = await tx.reserva.findFirst({
 
-        habitacionId: parseInt(habitacionId),
-        hotelId: req.hotelId,
-        estado: { not: 'Cancelada' },
-        AND: [
+        where: {
 
-          { fechaCheckIn: { lt: fechaCheckOut ? new Date(fechaCheckOut) : new Date() } },
-          { fechaCheckOut: { gt: new Date() } }
-        
-        ]
-      }
-    });
+          habitacionId: parseInt(habitacionId),
+          hotelId: req.hotelId,
+          estado: { not: 'Cancelada' },
+          AND: [
+            { fechaCheckIn: { lt: fechaCheckOut ? new Date(fechaCheckOut) : new Date() } },
+            { fechaCheckOut: { gt: new Date() } }
+          ]
 
-    if (conflicto) return res.status(400).json({ error: 'Overbooking: La habitación tiene una reserva futura.' });
-
-    // Buscamos o creamos el huésped
-    let huesped = await prisma.huesped.findFirst({
-
-      where: { hotelId: req.hotelId, numeroDocumento }
-
-    });
-
-    if (!huesped) {
-
-      huesped = await prisma.huesped.create({
-
-        data: { tipoDocumento, numeroDocumento, nombre, apellido, email, telefono: telefono, hotelId: req.hotelId }
+        }
 
       });
-    }
 
-    // Calculamos noches y precio total
-    const hoy = new Date();
-    let fechaSalida = fechaCheckOut ? new Date(fechaCheckOut) : new Date(new Date().setDate(hoy.getDate() + 1));
-    const calc  = await calcularPrecioReserva(req.hotelId, parseInt(habitacionId), hoy, fechaSalida, descuento);
+      if (conflicto) throw new Error('OVERBOOKING');
 
-    await prisma.reserva.create({
+      // 2. Buscar o crear el huésped (también dentro del cuarto)
+      let huesped = await tx.huesped.findFirst({
 
-      data: {
+        where: { hotelId: req.hotelId, numeroDocumento }
 
-        habitacionId: parseInt(habitacionId), huespedId: huesped.id, fechaCheckIn: hoy, fechaCheckOut: fechaSalida, precioTotal: calc.total, estado: 'En Casa', hotelId: req.hotelId
+      });
+
+      if (!huesped) {
+
+        huesped = await tx.huesped.create({
+
+          data: { tipoDocumento, numeroDocumento, nombre, apellido, email, telefono: telefono, hotelId: req.hotelId }
+
+        });
 
       }
-    });
 
-    await prisma.habitacion.update({
+      // 3. Calcular precio (le pasamos tx para que trabaje dentro del cuarto)
+      const hoy = new Date();
+      let fechaSalida = fechaCheckOut ? new Date(fechaCheckOut) : new Date(new Date().setDate(hoy.getDate() + 1));
+      const calc = await calcularPrecioReserva(req.hotelId, parseInt(habitacionId), hoy, fechaSalida, descuento, tx);
 
-      where: { id: parseInt(habitacionId) },
-      data: { estado: 'Ocupada' }
+      // 4. Crear la reserva
+      const nuevaReserva = await tx.reserva.create({
 
-    });
+        data: {
+
+          habitacionId: parseInt(habitacionId), huespedId: huesped.id, fechaCheckIn: hoy, fechaCheckOut: fechaSalida, precioTotal: calc.total, estado: 'En Casa', hotelId: req.hotelId
+
+        }
+
+      });
+
+      // 5. Ocupar la habitación
+      await tx.habitacion.update({
+
+        where: { id: parseInt(habitacionId) },
+        data: { estado: 'Ocupada' }
+
+      });
+
+      return nuevaReserva;
+
+    }, { isolationLevel: 'Serializable' }); // ← turno único: nadie más mira las mismas mesas mientras esto corre
 
     res.json({ mensaje: 'Check-in realizado con éxito' });
 
   } catch (error) {
 
-    res.status(500).json({ error: 'Error', detalle: error.message });
+    // El error OVERBOOKING es un rechazo ordenado (400), no un accidente (500)
+    if (error.message === 'OVERBOOKING') {
+      return res.status(400).json({ error: 'Overbooking: La habitación tiene una reserva activa.' });
+    }
+
+    console.error('❌ Error en check-in:', error);
+    res.status(500).json({ error: 'Error al hacer check-in' });
 
   }
+
 });
 
-// Ruta para HACER CHECK-OUT (finalizando reserva y actualizando estado de habitación)
+// Ruta para HACER CHECK-OUT y generar factura (con sello de hotel y cálculo de IVA)
 app.put('/api/checkout/:id', async (req, res) => {
 
   try {
 
-    const habitacion = await prisma.habitacion.findUnique({
-      
-      where: { id: parseInt(req.params.id) },
+    // Sello de hotel incluido: solo puedes hacer checkout de habitaciones de TU hotel
+    const habitacion = await prisma.habitacion.findFirst({
+
+      where: { id: parseInt(req.params.id), hotelId: req.hotelId },
       include: { reservas: { where: { estado: 'En Casa' }, take: 1, include: { huesped: true } } }
 
     });
 
-    if (!habitacion || habitacion.reservas.length === 0) throw new Error('No hay reserva activa');
+    if (!habitacion || habitacion.reservas.length === 0) {
+      return res.status(404).json({ error: 'No hay reserva activa en esta habitación' });
+    }
+
     const reserva = habitacion.reservas[0];
 
-    const noches = Math.max(1, Math.ceil((new Date() - new Date(reserva.fechaCheckIn)) / (1000 * 60 * 60 * 24)));
-    const subtotal = noches * habitacion.precioBase;
-    const iva = subtotal * 0.19;
+    // Datos del hotel: para el IVA configurable y los datos fiscales del recibo
+    const hotel = await prisma.hotel.findUnique({ where: { id: req.hotelId } });
+
+    // ⭐ EL PRECIO PROMETIDO: lo que el huésped ya conoció (tarifa dinámica - descuento)
+    const subtotal = reserva.precioTotal;
+
+    // IVA del hotel (configurable en su configuración), ya no el 19% escrito a mano
+    const ivaPorcentaje = hotel.ivaPorcentaje || 19;
+    const iva = Math.round(subtotal * (ivaPorcentaje / 100) * 100) / 100;
     const total = subtotal + iva;
+
+    // Noches reales (informativo para el recibo)
+    const noches = Math.max(1, Math.ceil((new Date() - new Date(reserva.fechaCheckIn)) / (1000 * 60 * 60 * 24)));
+
+    // Precio por noche EFECTIVO (promedio real, no el precio base de mentira)
+    const precioPromedio = Math.round((subtotal / noches) * 100) / 100;
 
     await prisma.reserva.update({
 
@@ -617,7 +653,17 @@ app.put('/api/checkout/:id', async (req, res) => {
 
         huesped: reserva.huesped, numeroHabitacion: habitacion.numero,
         fechaCheckIn: reserva.fechaCheckIn, fechaCheckOut: new Date(),
-        noches, precioPorNoche: habitacion.precioBase, subtotal, iva, total
+        noches, precioPorNoche: precioPromedio, subtotal, iva, ivaPorcentaje, total,
+        hotel: {
+
+          nombre: hotel.nombre,
+          razonSocial: hotel.razonSocial,
+          nit: hotel.nit,
+          direccion: hotel.direccion,
+          ciudad: hotel.ciudad,
+          telefono: hotel.telefono
+
+        }
 
       }
 
@@ -625,82 +671,119 @@ app.put('/api/checkout/:id', async (req, res) => {
 
   } catch (error) {
 
-    res.status(500).json({ error: error.message });
+    console.error('❌ Error en check-out:', error);
+    res.status(500).json({ error: 'Error al procesar el check-out' });
 
   }
 
 });
 
-// Ruta para CREAR una nueva reserva (sin check-in)
-// Ruta para crear una RESERVA FUTURA (Con fechas blindadas)
+
+// Ruta para crear una RESERVA FUTURA (con transacción anti-overbooking)
 app.post('/api/reservas', async (req, res) => {
+
   try {
+
     const { habitacionId, fechaCheckIn, fechaCheckOut, tipoDocumento, numeroDocumento, nombre, apellido, email, telefono, descuento, estado } = req.body;
 
-    // 1. PARSEO DE FECHAS (Blindado contra zona horaria)
-    // Separamos la fecha y la creamos a las 12 PM local
+    // 0. Validación de fechas
+    if (!fechaCheckIn || !fechaCheckOut) {
+
+      return res.status(400).json({ error: 'Las fechas son obligatorias' });
+
+    }
+
+    // 1. PARSEO DE FECHAS (Blindado contra zona horaria, tu creación original intacta)
     const [y1, m1, d1] = fechaCheckIn.split('-').map(Number);
     const checkInDate = new Date(y1, m1 - 1, d1, 12, 0, 0);
-    
+
     const [y2, m2, d2] = fechaCheckOut.split('-').map(Number);
     const checkOutDate = new Date(y2, m2 - 1, d2, 12, 0, 0);
 
-    // 2. Validar Anti-Overbooking (Usamos las fechas ya parseadas)
-    const conflicto = await prisma.reserva.findFirst({
-      where: {
-        habitacionId: parseInt(habitacionId), 
-        hotelId: req.hotelId,
-        estado: { not: 'Cancelada' },
-        AND: [
-          { fechaCheckIn: { lt: checkOutDate } },
-          { fechaCheckOut: { gt: checkInDate } }
-        ]
-      }
-    });
+    // Regla de negocio: la salida debe ser DESPUÉS de la entrada
+    if (checkOutDate <= checkInDate) {
 
-    if (conflicto) return res.status(400).json({ error: 'Overbooking: La habitación no está disponible en esas fechas.' });
+      return res.status(400).json({ error: 'La fecha de salida debe ser posterior a la fecha de entrada' });
 
-    // 3. Buscar o crear Huésped
-    let huesped = await prisma.huesped.findFirst({ 
-      where: { hotelId: req.hotelId, numeroDocumento } 
-    });
-
-    if (!huesped) {
-      huesped = await prisma.huesped.create({
-        data: { tipoDocumento, numeroDocumento, nombre, apellido, email, telefono, hotelId: req.hotelId }
-      });
     }
 
-    // 4. Calcular noches y precio (Usamos la calculadora inteligente)
-    const calc = await calcularPrecioReserva(req.hotelId, parseInt(habitacionId), checkInDate, checkOutDate, descuento);
-    const precioTotal = calc.total;
+    const nuevaReserva = await prisma.$transaction(async (tx) => {
 
-    // 5. Crear la reserva (Guardamos con las fechas parseadas)
-    const nuevaReserva = await prisma.reserva.create({
-      data: {
-        habitacionId: parseInt(habitacionId), 
-        huespedId: huesped.id,
-        fechaCheckIn: checkInDate, 
-        fechaCheckOut: checkOutDate,
-        precioTotal, 
-        estado: estado || 'Pendiente', 
-        hotelId: req.hotelId
-      }
-    });
+      // 2. Anti-overbooking DENTRO del cuarto cerrado
+      const conflicto = await tx.reserva.findFirst({
 
-    // 6. Si es "En Casa", cambiamos la habitación a Ocupada
-    if (estado === 'En Casa') {
-      await prisma.habitacion.update({
-        where: { id: parseInt(habitacionId) },
-        data: { estado: 'Ocupada' }
+        where: {
+
+          habitacionId: parseInt(habitacionId),
+          hotelId: req.hotelId,
+          estado: { not: 'Cancelada' },
+          AND: [
+            { fechaCheckIn: { lt: checkOutDate } },
+            { fechaCheckOut: { gt: checkInDate } }
+          ]
+
+        }
+
       });
-    }
+
+      if (conflicto) throw new Error('OVERBOOKING');
+
+      // 3. Buscar o crear Huésped
+      let huesped = await tx.huesped.findFirst({
+        where: { hotelId: req.hotelId, numeroDocumento }
+      });
+
+      if (!huesped) {
+        huesped = await tx.huesped.create({
+          data: { tipoDocumento, numeroDocumento, nombre, apellido, email, telefono, hotelId: req.hotelId }
+        });
+      }
+
+      // 4. Calcular noches y precio (con tx)
+      const calc = await calcularPrecioReserva(req.hotelId, parseInt(habitacionId), checkInDate, checkOutDate, descuento, tx);
+
+      // 5. Crear la reserva
+      const reserva = await tx.reserva.create({
+
+        data: {
+
+          habitacionId: parseInt(habitacionId),
+          huespedId: huesped.id,
+          fechaCheckIn: checkInDate,
+          fechaCheckOut: checkOutDate,
+          precioTotal: calc.total,
+          estado: estado || 'Pendiente',
+          hotelId: req.hotelId
+
+        }
+
+      });
+
+      // 6. Si es "En Casa", ocupamos la habitación (dentro del mismo cuarto)
+      if (estado === 'En Casa') {
+        await tx.habitacion.update({
+          where: { id: parseInt(habitacionId) },
+          data: { estado: 'Ocupada' }
+        });
+      }
+
+      return reserva;
+
+    }, { isolationLevel: 'Serializable' });
 
     res.status(201).json(nuevaReserva);
 
   } catch (error) {
-    res.status(500).json({ error: 'Error al crear la reserva', detalle: error.message });
+
+    if (error.message === 'OVERBOOKING') {
+      return res.status(400).json({ error: 'Overbooking: La habitación no está disponible en esas fechas.' });
+    }
+
+    console.error('❌ Error al crear reserva:', error);
+    res.status(500).json({ error: 'Error al crear la reserva' });
+
   }
+
 });
 
 // Ruta para OBTENER todas las reservas de un hotel específico
