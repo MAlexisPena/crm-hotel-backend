@@ -256,6 +256,9 @@ async function calcularPrecioReserva(hotelId, habitacionId, fechaCheckIn, fechaF
 
   let noches = 0;
   let subtotal = 0;
+  let nombreTemporada = null;
+  let porcentajeTemporada = null;  
+  const detalleNoches = [];
   let current = new Date(inicio);
 
   // Iteramos noche por noche
@@ -278,6 +281,12 @@ async function calcularPrecioReserva(hotelId, habitacionId, fechaCheckIn, fechaF
 
         // Aplicamos el porcentaje (ej: 20% -> multiplica por 1.20)
         precioNoche = habitacion.precioBase * (1 + (temp.porcentaje / 100));
+        if (!nombreTemporada) {
+          
+          nombreTemporada = temp.nombre; // Guardamos el nombre de la temporada
+          porcentajeTemporada = temp.porcentaje; // Guardamos el porcentaje de la temporada
+
+        }
         break; // Si hay varias temporadas, aplicamos la primera que coincida
 
       }
@@ -285,6 +294,7 @@ async function calcularPrecioReserva(hotelId, habitacionId, fechaCheckIn, fechaF
     }
 
     subtotal += precioNoche;
+    detalleNoches.push({ fecha: current.toISOString().split('T')[0], precio: precioNoche });
     current.setDate(current.getDate() + 1); // Pasamos al siguiente día
 
   }
@@ -299,25 +309,71 @@ async function calcularPrecioReserva(hotelId, habitacionId, fechaCheckIn, fechaF
 
   if (total < 0) total = 0;
 
-  return { noches, subtotal, total };
+  const subtotalBase = noches * habitacion.precioBase;
+  const ajusteTemporada = subtotal - subtotalBase;
+
+  return { 
+
+    noches, 
+    subtotal, 
+    subtotalBase,
+    ajusteTemporada,
+    precioBase : habitacion.precioBase,
+    total, 
+    nombreTemporada, 
+    porcentajeTemporada,
+    detalleNoches
+  };
 
 }
 
-// Ruta para que el Frontend simule el precio en tiempo real
+// Ruta para que el Frontend simule el precio en tiempo real (con desglose completo e IVA)
 app.post('/api/calcular-precio', async (req, res) => {
 
   try {
 
     const { habitacionId, fechaCheckIn, fechaCheckOut, descuento } = req.body;
-    if (!fechaCheckIn || !fechaCheckOut) return res.json({ noches: 0, subtotal: 0, total: 0 });
-    
+    if (!fechaCheckIn || !fechaCheckOut) {
+      return res.json({ noches: 0, subtotal: 0, descuento: 0, total: 0, ivaPorcentaje: 0, iva: 0, totalConIva: 0, nombreTemporada: null, detalleNoches: [] });
+    }
+
     const resultado = await calcularPrecioReserva(req.hotelId, parseInt(habitacionId), fechaCheckIn, fechaCheckOut, descuento);
-    res.json(resultado);
+
+    // El IVA lo calcula el BACKEND con la configuración del hotel. Una sola cocina. Una sola verdad.
+    const hotel = await prisma.hotel.findUnique({ where: { id: req.hotelId } });
+    const ivaPorcentaje = hotel.ivaPorcentaje || 19;
+
+    const descuentoNum = parseFloat(descuento);
+    const descuentoAplicado = (!isNaN(descuentoNum) && descuentoNum > 0) ? descuentoNum : 0;
+
+    // ⭐ FIX DOBLE DESCUENTO: la base es el SUBTOTAL dinámico (SIN descuento).
+    // El descuento se resta UNA sola vez, aquí. (Antes se restaba aquí Y dentro de la función)
+    const baseConDescuento = Math.max(0, resultado.subtotal - descuentoAplicado);
+
+    const iva = Math.round(baseConDescuento * (ivaPorcentaje / 100) * 100) / 100;
+    const totalConIva = baseConDescuento + iva;
+
+    res.json({
+
+      noches: resultado.noches,
+      precioBase: resultado.precioBase,
+      subtotalBase: resultado.subtotalBase,
+      nombreTemporada: resultado.nombreTemporada,
+      porcentajeTemporada: resultado.porcentajeTemporada,
+      ajusteTemporada: resultado.ajusteTemporada,
+      descuento: descuentoAplicado,
+      totalSinIva: baseConDescuento,
+      ivaPorcentaje,
+      iva,
+      totalConIva,
+      detalleNoches: resultado.detalleNoches
+
+    });
 
   } catch (error) {
 
     console.error('❌ Error al calcular precio:', error);
-    res.status(500).json({ error: 'Error al calcular el precio' });
+    res.status(500).json({ error: 'Error al calcular precio' });
 
   }
 
