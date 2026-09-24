@@ -464,18 +464,27 @@ app.get('/api/huespedes', async (req, res) => {
   }
 });
 
-// Ruta para OBTENER un huésped específico por su número de documento
-app.get('/api/huespedes/:numeroDocumento', async (req, res) => {
+// Ruta para OBTENER un huésped por su documento (autocompletado de formularios)
+app.get('/api/huespedes/documento/:numeroDocumento', async (req, res) => {
 
-  const huesped = await prisma.huesped.findFirst({
+  try {
 
-    where: { hotelId: req.hotelId, numeroDocumento: req.params.numeroDocumento }
+    const huesped = await prisma.huesped.findFirst({
 
-  });
+      where: { hotelId: req.hotelId, numeroDocumento: req.params.numeroDocumento }
 
-  if (!huesped) return res.status(404).json({ error: 'Huesped no encontrado' });
+    });
 
-  res.json(huesped);
+    if (!huesped) return res.status(404).json({ error: 'Huésped no encontrado' });
+
+    res.json(huesped);
+
+  } catch (error) {
+
+    console.error('❌ Error al buscar huésped por documento:', error);
+    res.status(500).json({ error: 'Error al buscar el huésped' });
+
+  }
 
 });
 
