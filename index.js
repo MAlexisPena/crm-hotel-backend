@@ -301,13 +301,21 @@ async function calcularPrecioReserva(hotelId, habitacionId, fechaCheckIn, fechaF
 
   if (noches === 0) noches = 1; // Mínimo 1 noche
   let total = subtotal;
+
+  let descuentoAplicado = 0;
   if (descuento && !isNaN(parseFloat(descuento))) {
 
-    total -= parseFloat(descuento);
+    descuentoAplicado = parseFloat(descuento);
+    total -= descuentoAplicado;
 
   }
 
-  if (total < 0) total = 0;
+  if (total < 0) {
+    
+    total = 0;
+    descuentoAplicado = subtotal; // Si el descuento es mayor que el subtotal, ajustamos
+  
+  }
 
   const subtotalBase = noches * habitacion.precioBase;
   const ajusteTemporada = subtotal - subtotalBase;
@@ -319,10 +327,12 @@ async function calcularPrecioReserva(hotelId, habitacionId, fechaCheckIn, fechaF
     subtotalBase,
     ajusteTemporada,
     precioBase : habitacion.precioBase,
+    descuentoAplicado,
     total, 
     nombreTemporada, 
     porcentajeTemporada,
     detalleNoches
+
   };
 
 }
@@ -626,17 +636,32 @@ app.post('/api/checkin', async (req, res) => {
       let fechaSalida = fechaCheckOut ? new Date(fechaCheckOut) : new Date(new Date().setDate(hoy.getDate() + 1));
       const calc = await calcularPrecioReserva(req.hotelId, parseInt(habitacionId), hoy, fechaSalida, descuento, tx);
 
-      // 4. Crear la reserva
+      // Congelamos el IVA del hotel EN EL MOMENTO de la promesa
+      const hotel = await tx.hotel.findUnique({ where: { id: req.hotelId } });
+
+      // 4. Crear la reserva CON su desglose congelado
       const nuevaReserva = await tx.reserva.create({
 
         data: {
 
-          habitacionId: parseInt(habitacionId), huespedId: huesped.id, fechaCheckIn: hoy, fechaCheckOut: fechaSalida, precioTotal: calc.total, estado: 'En Casa', hotelId: req.hotelId
+          habitacionId: parseInt(habitacionId), huespedId: huesped.id, fechaCheckIn: hoy, fechaCheckOut: fechaSalida, precioTotal: calc.total, estado: 'En Casa', hotelId: req.hotelId,
+
+          // 🆕 Campos de facturación congelados
+          nochesReservadas: calc.noches,
+          subtotalSinIva: calc.total,
+          ivaPorcentaje: hotel.ivaPorcentaje || 19,
+          nombreTemporada: calc.nombreTemporada,
+          detalleNoches: {
+            subtotalBase: calc.subtotalBase,
+            ajusteTemporada: calc.ajusteTemporada,
+            descuento: calc.descuentoAplicado,
+            noches: calc.detalleNoches
+          }
 
         }
 
       });
-
+      
       // 5. Ocupar la habitación
       await tx.habitacion.update({
 
@@ -809,6 +834,8 @@ app.post('/api/reservas', async (req, res) => {
 
       // 4. Calcular noches y precio (con tx)
       const calc = await calcularPrecioReserva(req.hotelId, parseInt(habitacionId), checkInDate, checkOutDate, descuento, tx);
+      // Congelar el IVA del hotel en el momento de la reserva
+      const hotel = await tx.hotel.findUnique({ where: { id: req.hotelId } });
 
       // 5. Crear la reserva
       const reserva = await tx.reserva.create({
@@ -821,7 +848,19 @@ app.post('/api/reservas', async (req, res) => {
           fechaCheckOut: checkOutDate,
           precioTotal: calc.total,
           estado: estado || 'Pendiente',
-          hotelId: req.hotelId
+          hotelId: req.hotelId,
+
+          // Campos de facturación congelados
+          nochesReservadas: calc.noches,
+          subtotalSinIva: calc.total,
+          ivaPorcentaje: hotel.ivaPorcentaje || 19,
+          nombreTemporada: calc.nombreTemporada,
+          detalleNoches: {
+            subtotalBase: calc.subtotalBase,
+            ajusteTemporada: calc.ajusteTemporada,
+            descuento: calc.descuentoAplicado,
+            noches: calc.detalleNoches
+          }
 
         }
 
