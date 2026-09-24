@@ -195,7 +195,7 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
 
       usuario: {
 
-        id: usuario.id, nombre: usuario.nombre, email: usuario.email, rol: usuario.rol, hotelId: usuario.hotel
+        id: usuario.id, nombre: usuario.nombre, email: usuario.email, rol: usuario.rol, hotelId: usuario.hotelId
 
       },
       hotel: {
@@ -316,7 +316,8 @@ app.post('/api/calcular-precio', async (req, res) => {
 
   } catch (error) {
 
-    res.status(500).json({ error: 'Error al calcular precio', detalle: error.message });
+    console.error('❌ Error al calcular precio:', error);
+    res.status(500).json({ error: 'Error al calcular el precio' });
 
   }
 
@@ -359,7 +360,8 @@ app.post('/api/habitaciones', async (req, res) => {
  
   } catch (error) {
 
-    res.status(500).json({ error: 'Error al crear la habitación', detalle: error.message });
+    console.error('❌ Error al crear la habitación:', error);
+    res.status(500).json({ error: 'Error al crear la habitación' });
   }
   
 
@@ -459,7 +461,8 @@ app.get('/api/huespedes', async (req, res) => {
 
   } catch (error) {
 
-    res.status(500).json({ error: 'Error al buscar huéspedes', detalle: error.message });
+    console.error('❌ Error al buscar huéspedes:', error);
+    res.status(500).json({ error: 'Error al buscar huéspedes' });
 
   }
 });
@@ -987,7 +990,7 @@ app.get('/api/dashboard', soloGerente, async (req, res) => {
         adr: Math.round(adr), revPAR: totalHab > 0 ? Math.round(totalIngresos / (totalHab * dias)) : 0
 
       },
-      topHuespedes: topHuespedes.map(h => ({ nombre: `${h.nombre} ${h.apellido}`, totalReservas: h._count.reservas }))
+      topHuespedes: topHuespedes.map(h => ({ nombre: `${h.nombre} ${h.apellido}`, documento: h.numeroDocumento, totalReservas: h._count.reservas }))
 
     });
 
@@ -1141,7 +1144,8 @@ app.put('/api/hotel', soloGerente, async (req, res) => {
 
   } catch (error) {
 
-    res.status(500).json({ error: 'Error al actualizar el hotel', detalle: error.message });
+    console.error('❌ Error al actualizar el hotel:', error);
+    res.status(500).json({ error: 'Error al actualizar el hotel' });
 
   }
 
