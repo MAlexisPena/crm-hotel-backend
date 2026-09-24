@@ -86,6 +86,15 @@ model Reserva {
   estado        String   @default("Pendiente")
   precioTotal   Float
 
+  // 🆕 DATOS DE FACTURACIÓN (se llenan al momento del check-out)
+  numeroFactura    Int?     // Consecutivo por hotel. Null = aún no facturada
+  nochesReservadas Int?     // Noches contratadas originalmente
+  subtotalSinIva   Float?   // Precio prometido congelado (sin IVA)
+  ivaPorcentaje    Float?   // IVA aplicado al facturar
+  ivaMonto         Float?   // Monto del IVA cobrado
+  nombreTemporada  String?  // Temporada que aplicó (informativo del recibo)
+  detalleNoches    Json?    // Desglose noche por noche (estructura completa)
+
   habitacionId  Int
   huespedId     Int
   habitacion    Habitacion @relation(fields: [habitacionId], references: [id])
