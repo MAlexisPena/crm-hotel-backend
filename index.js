@@ -784,6 +784,7 @@ app.put('/api/checkout/:id', async (req, res) => {
         noches,
         precioPorNoche,
         desglose: reserva.detalleNoches || null, // { subtotalBase, ajusteTemporada, descuento, noches: [...] }
+        nombreTemporada: reserva.nombreTemporada || null,
         subtotal,
         ivaPorcentaje,
         iva: ivaMonto,
