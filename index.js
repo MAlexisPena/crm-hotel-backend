@@ -661,7 +661,7 @@ app.post('/api/checkin', async (req, res) => {
         }
 
       });
-      
+
       // 5. Ocupar la habitación
       await tx.habitacion.update({
 
@@ -672,7 +672,7 @@ app.post('/api/checkin', async (req, res) => {
 
       return nuevaReserva;
 
-    }, { isolationLevel: 'Serializable' }); // ← turno único: nadie más mira las mismas mesas mientras esto corre
+    }, { isolationLevel: 'Serializable', maxWait: 10000, timeout: 15000 }); // ← turno único: nadie más mira las mismas mesas mientras esto corre
 
     res.json({ mensaje: 'Check-in realizado con éxito' });
 
@@ -690,79 +690,124 @@ app.post('/api/checkin', async (req, res) => {
 
 });
 
-// Ruta para HACER CHECK-OUT y generar factura (con sello de hotel y cálculo de IVA)
+// Ruta para HACER CHECK-OUT (factura con memoria propia y número consecutivo)
 app.put('/api/checkout/:id', async (req, res) => {
 
   try {
 
-    // Sello de hotel incluido: solo puedes hacer checkout de habitaciones de TU hotel
-    const habitacion = await prisma.habitacion.findFirst({
+    const factura = await prisma.$transaction(async (tx) => {
 
-      where: { id: parseInt(req.params.id), hotelId: req.hotelId },
-      include: { reservas: { where: { estado: 'En Casa' }, take: 1, include: { huesped: true } } }
+      // 1. La habitación con su reserva activa (con sello de hotel)
+      const habitacion = await tx.habitacion.findFirst({
 
-    });
+        where: { id: parseInt(req.params.id), hotelId: req.hotelId },
+        include: { reservas: { where: { estado: 'En Casa' }, take: 1, include: { huesped: true } } }
 
-    if (!habitacion || habitacion.reservas.length === 0) {
-      return res.status(404).json({ error: 'No hay reserva activa en esta habitación' });
-    }
+      });
 
-    const reserva = habitacion.reservas[0];
+      if (!habitacion || habitacion.reservas.length === 0) {
+        throw new Error('NO_RESERVA');
+      }
 
-    // Datos del hotel: para el IVA configurable y los datos fiscales del recibo
-    const hotel = await prisma.hotel.findUnique({ where: { id: req.hotelId } });
+      const reserva = habitacion.reservas[0];
 
-    // ⭐ EL PRECIO PROMETIDO: lo que el huésped ya conoció (tarifa dinámica - descuento)
-    const subtotal = reserva.precioTotal;
+      // 2. El hotel (para el recibo y el fallback del IVA en reservas antiguas)
+      const hotel = await tx.hotel.findUnique({ where: { id: req.hotelId } });
 
-    // IVA del hotel (configurable en su configuración), ya no el 19% escrito a mano
-    const ivaPorcentaje = hotel.ivaPorcentaje || 19;
-    const iva = Math.round(subtotal * (ivaPorcentaje / 100) * 100) / 100;
-    const total = subtotal + iva;
+      // 3. Número de factura consecutivo (dentro del cuarto cerrado: el turno único evita duplicados)
+      const ultimaFacturada = await tx.reserva.findFirst({
 
-    // Noches reales (informativo para el recibo)
-    const noches = Math.max(1, Math.ceil((new Date() - new Date(reserva.fechaCheckIn)) / (1000 * 60 * 60 * 24)));
+        where: { hotelId: req.hotelId, numeroFactura: { not: null } },
+        orderBy: { numeroFactura: 'desc' },
+        select: { numeroFactura: true }
 
-    // Precio por noche EFECTIVO (promedio real, no el precio base de mentira)
-    const precioPromedio = Math.round((subtotal / noches) * 100) / 100;
+      });
 
-    await prisma.reserva.update({
+      const numeroFactura = (ultimaFacturada?.numeroFactura || 0) + 1;
 
-      where: { id: reserva.id },
-      data: { fechaCheckOut: new Date(), precioTotal: total, estado: 'Finalizada' }
+      // 4. LA MEMORIA: usamos el desglose congelado al crear la reserva.
+      //    Fallback para reservas antiguas (nacieron antes de que existiera la facturación).
+      const tieneMemoria = reserva.subtotalSinIva !== null && reserva.subtotalSinIva !== undefined;
 
-    });
+      const subtotal = tieneMemoria ? reserva.subtotalSinIva : reserva.precioTotal;
+      const ivaPorcentaje = tieneMemoria ? reserva.ivaPorcentaje : (hotel.ivaPorcentaje || 19);
 
-    await prisma.habitacion.update({
+      let noches = reserva.nochesReservadas;
+      if (!noches) {
+        noches = Math.max(1, Math.ceil((new Date(reserva.fechaCheckOut) - new Date(reserva.fechaCheckIn)) / (1000 * 60 * 60 * 24)));
+      }
 
-      where: { id: habitacion.id },
-      data: { estado: 'Limpieza' }
+      const ivaMonto = Math.round(subtotal * (ivaPorcentaje / 100) * 100) / 100;
+      const total = subtotal + ivaMonto;
+      const precioPorNoche = Math.round((subtotal / noches) * 100) / 100;
 
-    });
+      // Recordamos la fecha de salida CONTRATADA antes de sobreescribirla con la real
+      const fechaCheckOutContratada = reserva.fechaCheckOut;
 
-    res.json({
+      // 5. Congelar la factura en la reserva (ya no se recalcula nunca más)
+      await tx.reserva.update({
 
-      factura: {
+        where: { id: reserva.id },
+        data: {
 
-        huesped: reserva.huesped, numeroHabitacion: habitacion.numero,
-        fechaCheckIn: reserva.fechaCheckIn, fechaCheckOut: new Date(),
-        noches, precioPorNoche: precioPromedio, subtotal, iva, ivaPorcentaje, total,
+          fechaCheckOut: new Date(),
+          precioTotal: total,
+          estado: 'Finalizada',
+          numeroFactura,
+          nochesReservadas: noches,
+          subtotalSinIva: subtotal,
+          ivaPorcentaje,
+          ivaMonto
+
+        }
+
+      });
+
+      // 6. La habitación pasa a Limpieza
+      await tx.habitacion.update({
+
+        where: { id: habitacion.id },
+        data: { estado: 'Limpieza' }
+
+      });
+
+      // 7. La factura completa, con memoria propia
+      return {
+
+        numeroFactura,
+        huesped: reserva.huesped,
+        numeroHabitacion: habitacion.numero,
+        tipoHabitacion: habitacion.tipo,
+        fechaCheckIn: reserva.fechaCheckIn,
+        fechaCheckOutContratada,
+        fechaCheckOut: new Date(),
+        noches,
+        precioPorNoche,
+        desglose: reserva.detalleNoches || null, // { subtotalBase, ajusteTemporada, descuento, noches: [...] }
+        subtotal,
+        ivaPorcentaje,
+        iva: ivaMonto,
+        total,
         hotel: {
-
           nombre: hotel.nombre,
           razonSocial: hotel.razonSocial,
           nit: hotel.nit,
           direccion: hotel.direccion,
           ciudad: hotel.ciudad,
           telefono: hotel.telefono
-
         }
 
-      }
+      };
 
-    });
+    }, { isolationLevel: 'Serializable', maxWait: 10000, timeout: 15000 });
+
+    res.json({ factura });
 
   } catch (error) {
+
+    if (error.message === 'NO_RESERVA') {
+      return res.status(404).json({ error: 'No hay reserva activa en esta habitación' });
+    }
 
     console.error('❌ Error en check-out:', error);
     res.status(500).json({ error: 'Error al procesar el check-out' });
@@ -876,7 +921,7 @@ app.post('/api/reservas', async (req, res) => {
 
       return reserva;
 
-    }, { isolationLevel: 'Serializable' });
+    }, { isolationLevel: 'Serializable', maxWait: 10000, timeout: 15000 });
 
     res.status(201).json(nuevaReserva);
 
